@@ -10,6 +10,7 @@
 """
 
 import time
+import asyncio
 import os
 import re
 import logging
@@ -35,15 +36,6 @@ headless_mode = os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() == "true"
 
 
 def my_captcha(sas) -> str:
-    """
-    هندلر ساده برای حل کپچا (در حال حاضر مقدار ثابت برمی‌گرداند).
-
-    Args:
-        sas: پارامتر ورودی (احتمالاً داده‌های مربوط به کپچا).
-
-    Returns:
-        str: کد حل‌شده کپچا (فعلاً مقدار "2" به‌صورت ثابت).
-    """
     return "2"
 
 
@@ -88,7 +80,7 @@ def extract_message_type1_info(message: Dict[str, Any]) -> Dict[str, Any]:
     if "(انیمیشن)" in text:
         is_anime = True
         text = text.replace("(انیمیشن)", "")
-    
+
     m = re.search(r"فیلم\s+(.+?)\s*[🎭🍿]", text)
     if m:
         movie_name = m.group(1).strip()
@@ -174,14 +166,14 @@ def extract_message_type1_info(message: Dict[str, Any]) -> Dict[str, Any]:
                         break
 
     # ساخت و مرتب‌سازی خروجی نهایی
-    original_list = [{"quality": v["quality"], "links": v["links"], "subtitle_link": v["subtitle_links"]} 
+    original_list = [{"quality": v["quality"], "links": v["links"], "subtitle_link": v["subtitle_links"]}
                      for v in versions_raw if v["type"] == "original"]
-    dubbed_list = [{"quality": v["quality"], "links": v["links"]} 
+    dubbed_list = [{"quality": v["quality"], "links": v["links"]}
                    for v in versions_raw if v["type"] == "dubbed"]
-    
+
     original_list.sort(key=lambda x: int(x["quality"]))
     dubbed_list.sort(key=lambda x: int(x["quality"]))
-    
+
     return {
         "movie_name": movie_name,
         "source": source,
@@ -230,7 +222,8 @@ def extract_message_type2_info(message: Dict[str, Any]) -> Dict[str, Optional[st
                 break
 
     # TODO: اگه بیش از 1 اسکرپر داری
-    source = "scraper2" if 'example2' in (download_link or '') else "scraper1" if 'example' in (download_link or '') else None
+    source = "scraper2" if 'example2' in (download_link or '') else "scraper1" if 'example' in (
+            download_link or '') else None
 
     return {
         "movie_name": movie_name,
@@ -258,15 +251,15 @@ def is_cinema_download_message(message: Dict[str, Any]) -> bool:
     if message.get('text') and message.get('metadata'):
         text = message.get('text')
         meta_data_parts = message.get('metadata').get('meta_data_parts', [])
-        
+
         has_link_in_meta = any(
-            part.get('type') == 'Link' and part.get('link') 
+            part.get('type') == 'Link' and part.get('link')
             for part in meta_data_parts
         )
-        
-        if ('دانلود مستقیم با نرم' in (text or '') and 
-            'قسمت' not in (text or '') and 
-            has_link_in_meta):
+
+        if ('دانلود مستقیم با نرم' in (text or '') and
+                'قسمت' not in (text or '') and
+                has_link_in_meta):
             return True
     return False
 
@@ -293,17 +286,17 @@ def check_type_message(message: Dict[str, Any]) -> Optional[int]:
 
     if not meta_data_parts:
         return None
-        
+
     quality_checker = ['زیرنویس', 'دوبله', 'دانلود زیرنویس']
     amd_checker = ['لینک دانلود', 'ADM', 'مستقیم']
-    
+
     for meta_part in meta_data_parts:
         if meta_part.get('link'):
             from_index = meta_part.get('from_index')
             length = meta_part.get('length')
             # استخراج متن اطراف لینک برای تحلیل محتوا
             temp_text = text[from_index - 10:length + from_index - 3]
-            
+
             if any(keyword in temp_text for keyword in quality_checker):
                 return 1
             elif any(keyword in temp_text for keyword in amd_checker):
@@ -311,9 +304,9 @@ def check_type_message(message: Dict[str, Any]) -> Optional[int]:
     return None
 
 
-def chach_all_message_in_channel(client, channel_guid: str, 
-                                  last_message_in_channel_guid: str = '0', 
-                                  limit: str = '25') -> List[Dict]:
+def chach_all_message_in_channel(client, channel_guid: str,
+                                 last_message_in_channel_guid: str = '0',
+                                 limit: str = '25') -> List[Dict]:
     """
     دریافت و کش کردن تمام پیام‌های یک کانال به‌صورت پیمایشی (Pagination).
 
@@ -330,13 +323,13 @@ def chach_all_message_in_channel(client, channel_guid: str,
         List[Dict]: لیست دیکشنری‌های حاوی اطلاعات تمام پیام‌های کانال.
     """
     all_messages = []
-    
+
     # درخواست اولیه
     channel_messages = client.get_messages(channel_guid, last_message_in_channel_guid, limit)
     messages_dict = channel_messages.to_dict
     messages_list = messages_dict.get('messages')
     all_messages.extend(messages_list)
-    
+
     new_max_id = messages_dict.get('new_max_id')
     has_continue = messages_dict.get('has_continue')
 
@@ -376,11 +369,11 @@ def add_movies_in_message(message: Dict, channel_guid: str) -> Optional[str]:
         if message_type == 1:
             message_info = extract_message_type1_info(message)
             versions = message_info.get("versions")
-            
+
             # اعتبارسنجی: حداقل یک نسخه باید وجود داشته باشد
             if len(versions.get('original', [])) == 0 and len(versions.get('dubbed', [])) == 0:
                 raise ValueError("استخراج اطلاعات پیام با مشکل رو به رو شد...")
-                
+
             movie_id = create_full_movie_type1(message_info, channel_guid, message.get('message_id'))
             return movie_id
 
@@ -480,7 +473,7 @@ def get_text_type1(movie_info: Dict[str, Any], text: str) -> str:
             # فرمت‌بندی خطوط توضیحات و ثابت
             if 'لینک دانلود مستقیم با نرم افزار ADM' in modified_line:
                 modified_line = modified_line.replace(
-                    'لینک دانلود مستقیم با نرم افزار ADM', 
+                    'لینک دانلود مستقیم با نرم افزار ADM',
                     utils.Bold("لینک دانلود مستقیم با نرم افزار ADM")
                 )
             if "MXPLAYR" in modified_line:
@@ -506,7 +499,7 @@ def get_text_type2(movie_info: Dict[str, Any]) -> str:
     text = text_type2  # تمپلیت ثابت از ماژول templates
 
     releases = movie.get('releases', {})
-    
+
     # اولویت‌بندی: دوبله > زیرنویس
     if 'dubbed' in releases:
         rel_type = 'dubbed'
@@ -517,7 +510,7 @@ def get_text_type2(movie_info: Dict[str, Any]) -> str:
 
     qualities = releases.get(rel_type, {}).get('qualities', {})
     title = movie.get('title')
-    
+
     # جایگزینی پلاس‌هولدرهای تمپلیت
     text = text.replace('title', title)
 
@@ -555,7 +548,7 @@ def change_movie_text_and_replace_link(client, movie: Dict[str, Any]) -> None:
     message_text = message.get('text')
     # TODO: اگه بیش از یک نوع قالب پیام دارید
     message_type = movie['message_type']
-    
+
     # انتخاب تابع تولید متن بر اساس نوع پیام
     if message_type == 1:
         new_text = get_text_type1(movie, message_text)
@@ -570,46 +563,83 @@ def change_movie_text_and_replace_link(client, movie: Dict[str, Any]) -> None:
 # -------------------------------------------------------------------
 # توابع کمکی اسکریپر و مدیریت خطا
 # -------------------------------------------------------------------
-def retry_on_timeout(func, max_retries: int = 5, delay: int = 5, *args, **kwargs) -> Any:
+async def retry_on_timeout(
+        func,
+        max_retries: int = 5,
+        delay: int = 5,
+        *args,
+        **kwargs
+) -> Any:
     """
-    دکوراتور/تابع کمکی برای اجرای مجدد توابع در صورت بروز خطای Timeout.
+    اجرای مجدد یک تابع Async در صورت بروز خطاهای موقتی مانند Timeout.
 
-    این تابع تا max_retries بار تلاش می‌کند تابع ورودی را اجرا کند.
-    خطاهای PlaywrightTimeoutError و Exceptionهای عمومی با تاخیر retry می‌شوند،
-    اما خطاهای منطقی مثل MovieNotFoundError بلافاصله propagated می‌شوند.
+    این تابع برای افزایش پایداری عملیات‌های شبکه‌ای و اسکرپینگ طراحی شده است.
+    در صورت بروز PlaywrightTimeoutError یا سایر خطاهای قابل Retry،
+    تابع تا تعداد مشخصی مجدداً اجرا خواهد شد.
+
+    از آنجا که نسخه جدید اسکریپر به‌صورت Async پیاده‌سازی شده است،
+    این تابع نیز به‌صورت Async عمل کرده و بین تلاش‌ها از
+    asyncio.sleep استفاده می‌کند تا Event Loop بلاک نشود.
+
+    رفتار خطاها:
+    - PlaywrightTimeoutError → Retry
+    - Exceptionهای عمومی → Retry
+    - MovieNotFoundError → بدون Retry مجدداً Raise می‌شود
+    - MultipleSearchResultsError → بدون Retry مجدداً Raise می‌شود
 
     Args:
-        func: تابع قابل فراخوانی که باید اجرا شود.
-        max_retries (int, optional): حداکثر تعداد تلاش‌ها. پیش‌فرض 5.
-        delay (int, optional): زمان انتظار بین تلاش‌ها (ثانیه). پیش‌فرض 5.
-        *args: آرگومان‌های موقعیتی برای تابع func.
-        **kwargs: آرگومان‌های کلیدی برای تابع func.
+        func: تابع Async که باید اجرا شود.
+        max_retries (int, optional):
+            حداکثر تعداد تلاش‌ها.
+            پیش‌فرض 5.
+        delay (int, optional):
+            زمان انتظار بین هر تلاش بر حسب ثانیه.
+            پیش‌فرض 5.
+        *args:
+            آرگومان‌های موقعیتی تابع.
+        **kwargs:
+            آرگومان‌های کلیدی تابع.
 
     Returns:
-        Any: مقدار بازگشتی از تابع func در صورت موفقیت.
+        Any:
+            مقدار بازگشتی تابع در صورت موفقیت.
 
     Raises:
-        Exception: آخرین خطای رخ‌داده در صورت شکست تمام تلاش‌ها.
+        MovieNotFoundError:
+            اگر فیلم پیدا نشود.
+        MultipleSearchResultsError:
+            اگر جستجو چندین نتیجه مبهم داشته باشد.
+        Exception:
+            آخرین خطای رخ‌داده پس از اتمام تمام تلاش‌ها.
+
+    Example:
+        async def fetch_movie():
+            return await get_new_links(movie)
+
+        result = await retry_on_timeout(
+            fetch_movie,
+            max_retries=3,
+            delay=10
+        )
     """
     last_exception = None
     for attempt in range(1, max_retries + 1):
         try:
-            return func(*args, **kwargs)
+            return await func(*args, **kwargs)
         except PlaywrightTimeoutError as e:
             logger.warning(f"⚠️ تلاش {attempt}/{max_retries} با خطای Timeout مواجه شد.")
             last_exception = e
-            time.sleep(delay)
+            await asyncio.sleep(delay)
         except (MultipleSearchResultsError, MovieNotFoundError):
-            # خطاهای منطقی که با Retry حل نمی‌شوند
             raise
         except Exception as e:
             logger.warning(f"⚠️ تلاش {attempt}/{max_retries} با خطای {e} مواجه شد.")
             last_exception = e
-            time.sleep(delay)
+            await asyncio.sleep(delay)
     raise last_exception
 
 
-def _extract_links(scraper, full_movie: Dict, m: Dict, search_page) -> Dict:
+async def _extract_links(scraper, full_movie: Dict, m: Dict, search_page) -> Dict:
     """
     تابع داخلی برای استخراج لینک‌های دانلود از صفحه جستجوی اسکریپر.
 
@@ -625,18 +655,23 @@ def _extract_links(scraper, full_movie: Dict, m: Dict, search_page) -> Dict:
     Returns:
         Dict: دیکشنری تو در تو حاوی لینک‌های استخراج‌شده.
     """
-    for rel_type, rel_data in full_movie['releases'].items():
-        qualities = rel_data.get('qualities', {})
+    for rel_type, rel_data in full_movie["releases"].items():
+        qualities = rel_data.get("qualities", {})
         m_qu = {}
         for quality, q_info in qualities.items():
-            has_sub = len(q_info.get('subtitles', [])) > 0
-            link_info = scraper.get_download_link(search_page, quality, rel_type, has_sub)
+            has_sub = len(q_info.get("subtitles", [])) > 0
+            link_info = await scraper.get_download_link(
+                search_page,
+                quality,
+                rel_type,
+                has_sub
+            )
             m_qu[quality] = link_info
         m[rel_type] = m_qu
     return m
 
 
-def get_new_links(full_movie: Dict) -> Dict:
+async def get_new_links(full_movie: Dict) -> Dict:
     """
     دریافت لینک‌های دانلود جدید برای یک فیلم با استفاده از اسکریپر.
 
@@ -657,10 +692,10 @@ def get_new_links(full_movie: Dict) -> Dict:
             headless=headless_mode,
             storage_state_path=os.getenv("SCRAPER_AUTH_PATH", "auth.json")
         )
-        with scraper1:
-            scraper1.login(os.getenv("SCRAPER_USERNAME", "user"), os.getenv("SCRAPER_PASSWORD", "pass"))
-            search_page = scraper1.search_movie(full_movie)
-            m = _extract_links(scraper1, full_movie, m, search_page)
+        async with scraper1:
+            await scraper1.login(os.getenv("SCRAPER_USERNAME", "user"), os.getenv("SCRAPER_PASSWORD", "pass"))
+            search_page = await scraper1.search_movie(full_movie)
+            m = await _extract_links(scraper1, full_movie, m, search_page)
             result[full_movie['title']] = m
         return result
     else:
@@ -668,16 +703,15 @@ def get_new_links(full_movie: Dict) -> Dict:
             headless=headless_mode,
             storage_state_path=os.getenv("SCRAPER_AUTH_PATH", "auth.json")
         )
-        with scraper2:
-            scraper2.login(os.getenv("SCRAPER_USERNAME", "user"), os.getenv("SCRAPER_PASSWORD", "pass"))
-            search_page = scraper2.search_movie(full_movie)
-            m = _extract_links(scraper2, full_movie, m, search_page)
+        async with scraper2:
+            await scraper2.login(os.getenv("SCRAPER_USERNAME", "user"), os.getenv("SCRAPER_PASSWORD", "pass"))
+            search_page = await scraper2.search_movie(full_movie)
+            m = await _extract_links(scraper2, full_movie, m, search_page)
             result[full_movie['title']] = m
         return result
 
 
-
-def ex_update_movie_links(full_movie: Dict) -> None:
+async def ex_update_movie_links(full_movie: Dict) -> None:
     """
     تابع اصلی به‌روزرسانی لینک‌های یک فیلم (حالت عادی).
 
@@ -688,18 +722,17 @@ def ex_update_movie_links(full_movie: Dict) -> None:
         full_movie (Dict): اطلاعات فیلم برای به‌روزرسانی.
     """
     logger.info(f"{full_movie['title']} شروع به گرفتن لینک‌های جدید")
-    
-    def temp():
-        return get_new_links(full_movie)
-        
-    movie_link = retry_on_timeout(temp)
-    success = update_movie_links(full_movie, movie_link)
-    
-    if success: 
-        logger.info(f"{full_movie['title']} با موفقیت به‌روزرسانی شد...")
+
+    async def temp():
+        return await get_new_links(full_movie)
+
+    movie_link = await retry_on_timeout(temp)
+    success = await asyncio.to_thread(update_movie_links, full_movie, movie_link)
+
+    logger.info(f"{full_movie['title']} با {'موفقیت به‌روزرسانی' if success else 'شکست مواجه'} شد...")
 
 
-def get_link_multiple_result(full_movie: Dict, index: int) -> Dict:
+async def get_link_multiple_result(full_movie: Dict, index: int) -> Dict:
     """
     دریافت لینک‌های دانلود جدید با انتخاب دستی نتیجه از لیست جستجو.
 
@@ -721,15 +754,15 @@ def get_link_multiple_result(full_movie: Dict, index: int) -> Dict:
             headless=headless_mode,
             storage_state_path=os.getenv("SCRAPER_AUTH_PATH", "auth.json")
         )
-        with scraper1:
-            scraper1.login(os.getenv("SCRAPER_USERNAME", "user"), os.getenv("SCRAPER_PASSWORD", "pass"))
+        async with scraper1:
+            await scraper1.login(os.getenv("SCRAPER_USERNAME", "user"), os.getenv("SCRAPER_PASSWORD", "pass"))
             try:
-                search_page = scraper1.search_movie(full_movie)
-                m = _extract_links(scraper1, full_movie, m, search_page)
+                search_page = await scraper1.search_movie(full_movie)
+                m = await _extract_links(scraper1, full_movie, m, search_page)
             except MultipleSearchResultsError:
                 # در صورت چندنتیجه‌ای بودن، از ایندکس انتخاب‌شده استفاده می‌شود
-                search_page = scraper1.select_search_result(full_movie, index)
-                m = _extract_links(scraper1, full_movie, m, search_page)
+                search_page = await scraper1.select_search_result(full_movie, index)
+                m = await _extract_links(scraper1, full_movie, m, search_page)
             result[full_movie['title']] = m
         return result
     else:
@@ -737,20 +770,20 @@ def get_link_multiple_result(full_movie: Dict, index: int) -> Dict:
             headless=headless_mode,
             storage_state_path=os.getenv("SCRAPER_AUTH_PATH", "auth.json")
         )
-        with scraper2:
-            scraper2.login(os.getenv("SCRAPER_USERNAME", "user"), os.getenv("SCRAPER_PASSWORD", "pass"))
+        async with scraper2:
+            await scraper2.login(os.getenv("SCRAPER_USERNAME", "user"), os.getenv("SCRAPER_PASSWORD", "pass"))
             try:
-                search_page = scraper2.search_movie(full_movie)
-                m = _extract_links(scraper2, full_movie, m, search_page)
+                search_page = await scraper2.search_movie(full_movie)
+                m = await _extract_links(scraper2, full_movie, m, search_page)
             except MultipleSearchResultsError:
                 # در صورت چندنتیجه‌ای بودن، از ایندکس انتخاب‌شده استفاده می‌شود
-                search_page = scraper2.select_search_result(full_movie, index)
-                m = _extract_links(scraper2, full_movie, m, search_page)
+                search_page = await scraper2.select_search_result(full_movie, index)
+                m = await _extract_links(scraper2, full_movie, m, search_page)
             result[full_movie['title']] = m
         return result
 
 
-def ex_update_movie_links_multiple(full_movie: Dict, index: int) -> None:
+async def ex_update_movie_links_multiple(full_movie: Dict, index: int) -> None:
     """
     تابع اصلی به‌روزرسانی لینک‌های یک فیلم (حالت چندنتیجه‌ای).
 
@@ -759,5 +792,5 @@ def ex_update_movie_links_multiple(full_movie: Dict, index: int) -> None:
         index (int): ایندکس نتیجه انتخاب‌شده برای رفع ابهام جستجو.
     """
     logger.info(f"{full_movie['title']} شروع به گرفتن لینک‌های جدید (چندگانه)")
-    movie_link = retry_on_timeout(get_link_multiple_result, full_movie=full_movie, index=index)
-    update_movie_links(full_movie, movie_link)
+    movie_link = await retry_on_timeout(get_link_multiple_result, full_movie=full_movie, index=index)
+    await asyncio.to_thread(update_movie_links, full_movie, movie_link)

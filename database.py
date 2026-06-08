@@ -47,7 +47,7 @@ def init_db():
                                    online_watchable INTEGER DEFAULT 0,
                                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                   UNIQUE (title, tags)
+                                   UNIQUE (chat_id, message_id)
                                );
 
                            CREATE TABLE IF NOT EXISTS releases
@@ -227,8 +227,8 @@ def get_or_create_movie(title: str,
             if cursor.rowcount == 0:
                 # درج انجام نشد (فیلم از قبل وجود داشته)
                 cursor = conn.execute(
-                    "SELECT id FROM movies WHERE title = ? AND tags = ?",
-                    (title, tags_json)
+                    "SELECT id FROM movies WHERE chat_id = ? AND message_id = ?",
+                    (chat_id, message_id)
                 )
                 row = cursor.fetchone()
                 if row is None:

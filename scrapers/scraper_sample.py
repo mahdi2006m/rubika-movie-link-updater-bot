@@ -2,8 +2,7 @@
 ماژول نمونه اسکریپر فیلم (Sample Movie Scraper) - الگوی پیاده‌سازی
 این فایل یک کلاس پایه (Template) برای اسکریپرهای فیلم ارائه می‌دهد که:
 - رابط برنامه‌نویسی (Interface) استاندارد برای استخراج لینک دانلود را تعریف می‌کند
-- با استفاده از Playwright (همگام) پیاده‌سازی شده اما قابل جایگزینی با Selenium/Requests است
-- شامل شبیه‌سازی (Mock) سناریوهای مختلف برای تست بدون نیاز به سایت واقعی است
+- با استفاده از Playwright (ناهمگام/Async) پیاده‌سازی شده اما قابل جایگزینی با Selenium/Requests است
 
 🎯 راهنمای سریع برای توسعه‌دهندگان:
 ─────────────────────────────────────────────────────────
@@ -11,16 +10,17 @@
 2️⃣ متدهای زیر را با منطق واقعی سایت هدف بازنویسی کنید:
    • login()        → احراز هویت و ذخیره Session/Cookie
    • search_movie() → جستجوی فیلم و مدیریت نتایج چندگانه
+   • select_search_result() → جستجوی فیلم با نتایج چندگانه
    • get_download_link() → استخراج لینک دانلود از صفحه فیلم
 3️⃣ خطاهای اختصاصی (MovieNotFoundError, ...) را در مکان‌های مناسب raise کنید
-4️⃣ از Context Manager (__enter__/__exit__) برای مدیریت منابع مرورگر استفاده کنید
+4️⃣ از Async Context Manager (__aenter__/__aexit__) برای مدیریت منابع مرورگر استفاده کنید
 
 🔧 ساختار پیشنهادی برای اسکریپر واقعی:
 ─────────────────────────────────────────────────────────
 class MySiteScraper(SampleMovieScraper):
     BASE_URL = "https://mysite.com"
 
-    def login(self, username, password, **kwargs):
+    async def login(self, username, password, **kwargs):
         # پیاده‌سازی واقعی لاگین با Playwright/Selenium
         self.page.goto(f"{self.BASE_URL}/login")
         self.page.fill("#username", username)
@@ -29,7 +29,7 @@ class MySiteScraper(SampleMovieScraper):
         self.page.wait_for_load_state("networkidle")
         self.logged_in = True
 
-    def search_movie(self, full_movie: dict):
+    async def search_movie(self, full_movie: dict):
         # جستجوی فیلم و بازگرداندن صفحه نتیجه
         query = full_movie.get('title') or full_movie.get('tags', [''])[0]
         self.page.goto(f"{self.BASE_URL}/search?q={query}")
@@ -44,30 +44,28 @@ class MySiteScraper(SampleMovieScraper):
 
         return self.page  # یا آبجکت حاوی اطلاعات صفحه
 
-    def get_download_link(self, search_page, quality, release, has_sub=False):
+    async def get_download_link(self, search_page, quality, release, has_sub=False):
         # استخراج لینک دانلود بر اساس کیفیت و نوع انتشار
         # بازگرداندن دیکشنری با کلیدهای 'link' و 'sub_link'
         ...
 """
 
-import time
+import asyncio
 import logging
 from typing import Optional, Dict, Any, Callable
 
-from playwright.sync_api import (
-    sync_playwright,
+from playwright.async_api import (
+    async_playwright,
     Playwright,
     Page,
     Browser,
     BrowserContext,
-    TimeoutError as PlaywrightTimeoutError,
 )
-from database import update_movie_index
-from scraper_errors import (
+from scraper_exception import (
     MovieNotFoundError,
     MultipleSearchResultsError,
     LoginError,
-    PlaywrightTimeoutError as PWTimeoutError
+    PlaywrightTimeoutError
 )
 
 logger = logging.getLogger(__name__)
@@ -88,7 +86,7 @@ class SampleMovieScraper:
 
     🔹 چرخه حیات یک اسکریپر:
     ┌─────────────────────────────────────┐
-    │ 1. with SampleMovieScraper() as s:  │
+    │ 1. async with SampleMovieScraper() as s:  │
     │ 2. s.start()                        │ → راه‌اندازی مرورگر
     │ 3. s.login(...)                     │ → احراز هویت
     │ 4. page = s.search_movie(movie)     │ → جستجوی فیلم
@@ -111,10 +109,10 @@ class SampleMovieScraper:
 
     Example:
         >>> scraper = SampleMovieScraper(headless=True)
-        >>> with scraper:
-        ...     scraper.login("user", "pass")
-        ...     page = scraper.search_movie({"title": "Inception"})
-        ...     links = scraper.get_download_link(page, "1080", "original")
+        >>> async with scraper:
+        ...     await scraper.login("user", "pass")
+        ...     page = await scraper.search_movie({"title": "Inception"})
+        ...     links = await scraper.get_download_link(page, "1080", "original")
         ...     print(links['link'])
     """
 
@@ -162,7 +160,7 @@ class SampleMovieScraper:
     # ─────────────────────────────────────────────────────
     # 🔄 مدیریت منابع با Context Manager
     # ─────────────────────────────────────────────────────
-    def __enter__(self):
+    async def __aenter__(self):
         """
         ورود به Context Manager - راه‌اندازی خودکار اسکریپر.
 
@@ -174,13 +172,13 @@ class SampleMovieScraper:
 
         Example:
             >>> with SampleMovieScraper() as scraper:
-            ...     scraper.login("user", "pass")
+            ...     await scraper.login("user", "pass")
             ...     # عملیات اسکراپینگ
         """
-        self.start()
+        await self.start()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
         """
         خروج از Context Manager - پاک‌سازی خودکار منابع.
 
@@ -195,14 +193,14 @@ class SampleMovieScraper:
         Returns:
             bool: False برای propagation خطاها به بیرون (رفتار پیش‌فرض).
         """
-        self.close()
+        await self.close()
         # بازگرداندن False یعنی خطاها propagate شوند
         return False
 
     # ─────────────────────────────────────────────────────
     # 🚀 راه‌اندازی و بستن مرورگر
     # ─────────────────────────────────────────────────────
-    def start(self) -> None:
+    async def start(self) -> None:
         """
         راه‌اندازی مرورگر Playwright و آماده‌سازی زمینه اجرا.
 
@@ -222,7 +220,7 @@ class SampleMovieScraper:
             Exception: در صورت شکست در راه‌اندازی مرورگر.
 
         Example (پیاده‌سازی واقعی با Playwright):
-            def start(self):
+            async def start(self):
                 self.playwright = sync_playwright().start()
                 self.browser = self.playwright.chromium.launch(
                     headless=self.headless,
@@ -240,7 +238,7 @@ class SampleMovieScraper:
         # در حالت Dummy، فقط لاگ می‌زنیم
         # در پیاده‌سازی واقعی، کدهای بالا را اینجا قرار دهید
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """
         بستن مرورگر و آزادسازی تمام منابع مرتبط با Playwright.
 
@@ -254,11 +252,11 @@ class SampleMovieScraper:
         4. توقف playwright (پاک‌سازی نهایی)
 
         Note:
-            استفاده از Context Manager (__enter__/__exit__) تضمین می‌کند
+            استفاده از Async Context Manager (__aenter__/__aexit__) تضمین می‌کند
             که این متد حتی در صورت بروز خطا نیز فراخوانی می‌شود.
 
         Example (پیاده‌سازی واقعی):
-            def close(self):
+            async def close(self):
                 if self.page:
                     self.page.close()
                 if self.context:
@@ -276,7 +274,7 @@ class SampleMovieScraper:
     # ─────────────────────────────────────────────────────
     # 🔐 احراز هویت (Login)
     # ─────────────────────────────────────────────────────
-    def login(
+    async def login(
         self,
         username: str,
         password: str,
@@ -313,7 +311,7 @@ class SampleMovieScraper:
             LoginError: در صورت شکست در احراز هویت (رمز اشتباه، کپچا، مسدودی و...).
 
         Example (پیاده‌سازی واقعی با Playwright):
-            def login(self, username, password, captcha_solver=None):
+            async def login(self, username, password, captcha_solver=None):
                 self.page.goto(f"{self.BASE_URL}/login")
 
                 # پر کردن فرم
@@ -356,7 +354,7 @@ class SampleMovieScraper:
     # ─────────────────────────────────────────────────────
     # 🔍 جستجوی فیلم
     # ─────────────────────────────────────────────────────
-    def search_movie(self, full_movie: dict) -> Any:
+    async def search_movie(self, full_movie: dict) -> Any:
         """
         جستجوی فیلم در سایت منبع بر اساس اطلاعات دیتابیس.
 
@@ -392,7 +390,7 @@ class SampleMovieScraper:
             PlaywrightTimeoutError: اگر عملیات جستجو بیش از حد طول بکشد.
 
         Example (پیاده‌سازی واقعی):
-            def search_movie(self, full_movie: dict):
+            async def search_movie(self, full_movie: dict):
                 # ساخت کوئری بهینه
                 tags = full_movie.get('tags', [])
                 query = tags[1] if len(tags) > 1 else (tags[0] if tags else full_movie['title'])
@@ -435,13 +433,13 @@ class SampleMovieScraper:
             raise MultipleSearchResultsError(fake_results, title)
 
         # شبیه‌سازی تاخیر شبکه برای تست واقعی‌تر
-        time.sleep(0.5)
+        await asyncio.sleep(0.5)
 
         # در حالت Dummy، یک دیکشنری ساده برمی‌گردانیم
         # در پیاده‌سازی واقعی، آبجکت Page یا اطلاعات صفحه را برگردانید
         return {"page_id": "dummy_page_123", "movie_title": title}
 
-    def select_search_result(self, movie: dict, index: int) -> Any:
+    async def select_search_result(self, movie: dict, index: int) -> Any:
         """
         انتخاب دستی نتیجه از لیست جستجوی چندگانه بر اساس ایندکس.
 
@@ -468,7 +466,7 @@ class SampleMovieScraper:
             PlaywrightTimeoutError: اگر لود صفحه فیلم طول بکشد.
 
         Example (پیاده‌سازی واقعی):
-            def select_search_result(self, movie: dict, index: int):
+            async def select_search_result(self, movie: dict, index: int):
                 # انجام مجدد جستجو
                 tags = movie.get('tags', [])
                 query = tags[1] if len(tags) > 1 else (tags[0] if tags else movie['title'])
@@ -501,7 +499,7 @@ class SampleMovieScraper:
     # ─────────────────────────────────────────────────────
     # 🔗 استخراج لینک دانلود
     # ─────────────────────────────────────────────────────
-    def get_download_link(
+    async def get_download_link(
         self,
         search_page: Any,
         quality: str,
@@ -554,7 +552,7 @@ class SampleMovieScraper:
             Exception: اگر ساختار صفحه با انتظار اسکریپر همخوانی نداشته باشد.
 
         Example (پیاده‌سازی واقعی با Playwright):
-            def get_download_link(self, search_page, quality, release, has_sub=False):
+            async def get_download_link(self, search_page, quality, release, has_sub=False):
                 page = search_page  # در اینجا search_page همان Page است
 
                 # انتخاب تب کیفیت مورد نظر
@@ -595,7 +593,7 @@ class SampleMovieScraper:
         )
 
         # شبیه‌سازی تاخیر شبکه
-        time.sleep(0.2)
+        await asyncio.sleep(0.2)
 
         # ساخت لینک‌های Dummy برای تست
         dummy_link = f"https://example.com/download/{quality}_{release}.mp4"

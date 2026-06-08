@@ -18,6 +18,7 @@ import time
 import logging
 import signal
 import os
+import asyncio
 import queue
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict
@@ -32,15 +33,17 @@ from client import client, channel_guid
 from scrapers.scraper_sample import MovieNotFoundError, MultipleSearchResultsError
 from dotenv import load_dotenv
 
+log = logging.getLogger(__name__)
+log.setLevel(logging.INFO)
+channel_guid = os.getenv("CHANNEL_GUID")
+
 load_dotenv()
 
-# تلاش برای ایمپورت صف نوتیفیکیشن از ماژول ربات
 try:
     from bot import notification_queue, admin_chat_guid
 except ImportError:
     notification_queue = None
     admin_chat_guid = os.getenv("ADMIN_CHAT_GUID")
-    log = logging.getLogger(__name__)
     log.warning("⚠️ Could not import notification_queue from bot.py")
 
 
@@ -64,10 +67,6 @@ class Config:
     DELAY_BETWEEN_STAGES: float = float(os.getenv("DELAY_BETWEEN_STAGES", 5.0))
 
 
-log = logging.getLogger(__name__)
-log.setLevel(logging.INFO)
-
-# افزودن هندلر استریم در صورت عدم وجود (جلوگیری از تکرار لاگ)
 if not log.handlers:
     handler = logging.StreamHandler()
     handler.setFormatter(
@@ -143,7 +142,7 @@ class AutomationEngine:
         except Exception as e:
             log.error(f"❌ Error putting message in queue: {e}")
 
-    def _wait_for_client_ready(self, timeout: int = 60) -> bool:
+    async def _wait_for_client_ready(self, timeout: int = 60) -> bool:
         """
         انتظار برای آماده‌ شدن کلاینت روبیکا قبل از شروع عملیات.
 
@@ -162,13 +161,12 @@ class AutomationEngine:
         while time.time() - start < timeout:
             try:
                 if hasattr(client, 'get_me'):
-                    client.get_me()
+                    await asyncio.to_thread(client.get_me)
                     log.info("✅ کلاینت روبیکا متصل و آماده است.")
                     return True
             except Exception:
-                pass  # انتظار و تلاش مجدد
-            time.sleep(1)
-
+                pass
+            await asyncio.sleep(1)
         log.warning("⚠️ کلاینت پس از ۶۰ ثانیه متصل نشد. ادامه با ریسک...")
         return False
 
@@ -186,17 +184,14 @@ class AutomationEngine:
             bool: True اگر فیلم باید رد شود (به‌روز است)، False اگر نیاز به آپدیت دارد.
         """
         update_at = movie.get('updated_at')
-        if not update_at:
-            return False  # فیلم بدون تاریخ آپدیت باید پردازش شود
-
+        if not update_at: return False
         try:
             last = datetime.strptime(update_at, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
             return (datetime.now(timezone.utc) - last) < timedelta(hours=Config.SKIP_RECENT_UPDATE_HOURS)
         except Exception:
-            # در صورت خطای پارس تاریخ، فیلم پردازش شود
             return False
 
-    def stage_fetch_and_save(self) -> None:
+    async def stage_fetch_and_save(self) -> None:
         """
         مرحله ۱: دریافت پیام‌های کانال و ذخیره فیلم‌ها در دیتابیس.
 
@@ -211,18 +206,18 @@ class AutomationEngine:
         """
         log.info("📥 مرحله ۱: دریافت و ذخیره پیام‌ها...")
         self.stats["saved"] = 0
-
-        if not self._wait_for_client_ready():
+        if not await self._wait_for_client_ready():
             log.error("❌ مرحله ۱ لغو شد: کلاینت آماده نیست.")
             return
 
         try:
-            messages = chach_all_message_in_channel(client, channel_guid, '0')
+            messages = await asyncio.to_thread(
+                chach_all_message_in_channel, client, channel_guid, '0'
+            )
             log.info(f"📦 {len(messages)} پیام دریافت شد.")
 
             for msg in messages:
-                if not self.running:
-                    break
+                if not self.running: break
                 try:
                     add_movies_in_message(msg, channel_guid)
                     self.stats["saved"] += 1
@@ -232,10 +227,9 @@ class AutomationEngine:
             log.info(f"✅ مرحله ۱: {self.stats['saved']} فیلم جدید/تکراری پردازش شد.")
         except Exception as e:
             log.error(f"❌ خطای بحرانی در مرحله ۱: {e}")
+        await asyncio.sleep(Config.DELAY_BETWEEN_STAGES)
 
-        time.sleep(Config.DELAY_BETWEEN_STAGES)
-
-    def stage_update_links(self) -> None:
+    async def stage_update_links(self) -> None:
         """
         مرحله ۲: به‌روزرسانی لینک‌های دانلود فیلم‌ها از طریق اسکریپر.
 
@@ -252,80 +246,58 @@ class AutomationEngine:
         self.stats["updated"] = 0
         self.stats["failed"] = 0
 
-        all_movies = get_all_movies()
-        all_movies.reverse()  # پردازش از جدید به قدیم
+        all_movies = await asyncio.to_thread(get_all_movies)
+        all_movies.reverse()
 
         for movie in all_movies:
-            if not self.running:
-                break
-
-            if self._should_skip_update(movie):
-                continue  # رد فیلم‌های به‌روز
-
+            if not self.running: break
+            if self._should_skip_update(movie): continue
+            if self._should_skip_update(movie): continue
             full_movie = get_movie_full(movie['id'])
             if not full_movie:
                 continue
 
-            # ساخت کوئری جستجو از تگ‌ها یا عنوان فیلم
             tags = full_movie.get('tags', [])
             query = tags[1] if len(tags) > 1 else (tags[0] if tags else full_movie['title'])
 
             try:
-                ex_update_movie_links(full_movie)
+                await ex_update_movie_links(full_movie)
                 self.stats["updated"] += 1
                 log.info(f"✅ {full_movie['title']} آپدیت شد.")
 
             except MovieNotFoundError as e:
-                add_failed_movie(
-                    title=full_movie['title'],
-                    error=f"{type(e).__name__}: {e}",
-                    movie_id=full_movie['id'],
-                    search_query=query,
-                    source=full_movie.get('source')
-                )
+                await asyncio.to_thread(add_failed_movie, title=full_movie['title'], error=f"{type(e).__name__}: {e}",
+                                        movie_id=full_movie['id'], search_query=query, source=full_movie.get('source'))
                 self.stats["failed"] += 1
                 log.warning(f"❌ {full_movie['title']} یافت نشد.")
 
             except MultipleSearchResultsError as e:
-                add_failed_movie(
-                    title=full_movie['title'],
-                    error=f"{type(e).__name__}: {e}",
-                    movie_id=full_movie['id'],
-                    search_query=query,
-                    source=full_movie.get('source')
-                )
+                await asyncio.to_thread(add_failed_movie, title=full_movie['title'], error=f"{type(e).__name__}: {e}",
+                                        movie_id=full_movie['id'], search_query=query, source=full_movie.get('source'))
                 self.stats["failed"] += 1
                 log.warning(f"⚠️ {full_movie['title']} نتایج متعدد داشت.")
 
-                # تلاش برای آپدیت با ایندکس ذخیره‌شده (در صورت وجود)
                 if full_movie.get('index') is not None:
                     try:
-                        ex_update_movie_links_multiple(full_movie, full_movie['index'])
+                        await ex_update_movie_links_multiple(full_movie, full_movie['index'])
                         self.stats["updated"] += 1
                         log.info(f"✅ {full_movie['title']} با ایندکس {full_movie['index']} آپدیت شد.")
                     except Exception as ex:
                         log.error(f"❌ خطا در آپدیت ایندکسی {full_movie['title']}: {ex}")
 
             except Exception as e:
-                add_failed_movie(
-                    title=full_movie['title'],
-                    error=f"{type(e).__name__}: {e}",
-                    movie_id=full_movie['id'],
-                    search_query=query,
-                    source=full_movie.get('source')
-                )
+                await asyncio.to_thread(add_failed_movie, title=full_movie['title'], error=f"{type(e).__name__}: {e}",
+                                        movie_id=full_movie['id'], search_query=query, source=full_movie.get('source'))
                 self.stats["failed"] += 1
                 log.error(f"❌ خطای ناشناخته برای {full_movie['title']}: {e}")
 
-            time.sleep(Config.DELAY_BETWEEN_MOVIES)
+            await asyncio.sleep(Config.DELAY_BETWEEN_MOVIES)
 
         log.info(f"✅ مرحله ۲: {self.stats['updated']} آپدیت موفق | {self.stats['failed']} خطا")
-        time.sleep(Config.DELAY_BETWEEN_STAGES)
+        await asyncio.sleep(Config.DELAY_BETWEEN_STAGES)
 
-    def stage_edit_messages(self) -> None:
+    async def stage_edit_messages(self):
         """
-        مرحله ۳: ویرایش پیام‌های کانال با لینک‌های به‌روز شده.
-
         این مرحله پس از به‌روزرسانی لینک‌ها در دیتابیس، متن پیام‌های اصلی
         در کانال را با لینک‌های جدید جایگزین می‌کند تا کاربران به لینک‌های
         سالم دسترسی داشته باشند.
@@ -336,28 +308,27 @@ class AutomationEngine:
         log.info("✏️ مرحله ۳: ویرایش پیام‌های کانال...")
         self.stats["edited"] = 0
 
-        if not self._wait_for_client_ready():
+        if not await self._wait_for_client_ready():
             log.error("❌ مرحله ۳ لغو شد.")
             return
 
         try:
-            all_movies = get_all_movies()
+            all_movies = await asyncio.to_thread(get_all_movies)
             for movie in all_movies:
-                if not self.running:
-                    break
+                if not self.running: break
                 try:
-                    full = get_movie_full(movie['id'])
+                    full = await asyncio.to_thread(get_movie_full, movie['id'])
                     if full:
-                        change_movie_text_and_replace_link(client, full)
+                        await asyncio.to_thread(change_movie_text_and_replace_link, client, full)
                         self.stats["edited"] += 1
-                        time.sleep(1.5)  # Rate limiting
+                        await asyncio.sleep(1.5)
                 except Exception as e:
                     log.error(f"خطا در ویرایش {movie.get('title')}: {e}")
             log.info(f"✅ مرحله ۳: {self.stats['edited']} پیام ویرایش شد.")
         except Exception as e:
             log.error(f"❌ خطای مرحله ۳: {e}")
 
-    def run_cycle(self) -> None:
+    async def run_cycle(self) -> None:
         """
         اجرای یک چرخه کامل اتوماسیون (شامل ۳ مرحله + گزارش‌دهی).
 
@@ -370,7 +341,6 @@ class AutomationEngine:
         start_time_str = datetime.now().strftime('%Y-%m-%d %H:%M')
         log.info(f"🚀 شروع چرخه اتوماسیون | {start_time_str}")
 
-        # ✅ ارسال نوتیفیکیشن شروع چرخه
         start_msg = (
             f"🚀 **شروع چرخه اتوماسیون**\n"
             f"⏰ زمان: {start_time_str}\n"
@@ -378,15 +348,13 @@ class AutomationEngine:
         )
         self._send_bot_notification(start_msg)
 
-        # ریست آمار برای چرخه جدید
         self.stats = {"saved": 0, "updated": 0, "edited": 0, "failed": 0}
 
         try:
-            self.stage_fetch_and_save()
-            self.stage_update_links()
-            self.stage_edit_messages()
+            await self.stage_fetch_and_save()
+            await self.stage_update_links()
+            await self.stage_edit_messages()
 
-            # ✅ ارسال گزارش پایان چرخه
             end_msg = (
                 f"🎉 **چرخه اتوماسیون پایان یافت**\n"
                 f"⏰ زمان: {datetime.now().strftime('%H:%M')}\n\n"
@@ -399,16 +367,11 @@ class AutomationEngine:
             self._send_bot_notification(end_msg)
 
         except Exception as e:
-            # مدیریت خطاهای بحرانی در سطح چرخه
-            error_msg = (
-                f"💥 **خطای بحرانی در اتوماسیون**\n"
-                f"⏰ زمان: {datetime.now().strftime('%H:%M')}\n"
-                f"❌ خطا: {str(e)}"
-            )
+            error_msg = f"💥 **خطای بحرانی در اتوماسیون**\n⏰ زمان: {datetime.now().strftime('%H:%M')}\n❌ خطا: {str(e)}"
             log.error(f"💥 خطای بحرانی در چرخه اصلی: {e}")
             self._send_bot_notification(error_msg)
 
-    def run(self) -> None:
+    async def run(self) -> None:
         """
         حلقه اصلی اجرای اتوماسیون (توسط ترد جداگانه فراخوانی می‌شود).
 
@@ -417,29 +380,22 @@ class AutomationEngine:
         توقف با تنظیم self.running = False انجام می‌شود.
         """
         log.info(f"⏰ اتوماسیون فعال شد | چرخه هر {Config.CYCLE_INTERVAL_HOURS} ساعت")
-
         while self.running:
             start_time = time.time()
-            self.run_cycle()
-
-            # محاسبه زمان باقی‌مانده تا چرخه بعدی
+            await self.run_cycle()
             elapsed = time.time() - start_time
             sleep_time = max(0, (Config.CYCLE_INTERVAL_HOURS * 3600) - elapsed)
 
             if self.running and sleep_time > 0:
                 hours = sleep_time / 3600
                 log.info(f"😴 حالت خواب: {hours:.2f} ساعت دیگر...")
+                await asyncio.sleep(sleep_time)
 
-                # خواب با قابلیت بیدار شدن فوری در صورت دریافت سیگنال توقف
                 for _ in range(int(sleep_time / 60)):
                     if not self.running:
                         break
                     time.sleep(60)
 
-
-# ============================================================
-# 🎯 توابع سطح ماژول برای مدیریت چرخه حیات
-# ============================================================
 _engine: Optional[AutomationEngine] = None
 
 
@@ -459,8 +415,10 @@ def start_automation() -> None:
     init_db()
     _engine = AutomationEngine()
 
-    # اجرای اتوماسیون در ترد جداگانه برای عدم مسدود کردن برنامه اصلی
-    threading.Thread(target=_engine.run, daemon=True, name="AutoThread").start()
+    def run_async_loop():
+        asyncio.run(_engine.run())
+
+    threading.Thread(target=run_async_loop, daemon=True, name="AutoThread").start()
     log.info("🧵 ترد اتوماسیون راه‌اندازی شد")
 
 

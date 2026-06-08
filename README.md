@@ -256,13 +256,10 @@ pip install -r requirements.txt
 #### **مرحله 3: پیکربندی**
 
 ```powershell
-# 1. فایل .env را ایجاد کنید
-copy .env.example .env
-
-# 2. فایل را در Notepad ویرایش کنید
+# 1. فایل را در Notepad ویرایش کنید
 notepad .env
 
-3. ایجاد فولدر های لازم
+2. ایجاد فولدر های لازم
 mkdir auth data logs
 
 ```
@@ -336,7 +333,7 @@ pip install -r requirements.txt
 
 ```bash
 # 1. کپی .env
-cp .env.example .env
+cp .env .env
 
 # 2. ویرایش
 nano .env
@@ -901,7 +898,7 @@ git push origin feature/your-feature-name
 # scrapers/scraper_newsite.py
 
 from scrapers.scraper_sample import SampleMovieScraper
-from scrapers.scraper_errors import *
+from scrapers.scraper_exception import *
 
 class NewSiteScraper(SampleMovieScraper):
     BASE_URL = "https://newsite.com"

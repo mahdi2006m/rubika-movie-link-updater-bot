@@ -12,7 +12,7 @@ import re
 import os
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
-from scrapers.scraper_errors import MovieNotFoundError, MultipleSearchResultsError
+from scrapers.scraper_exception import MovieNotFoundError, MultipleSearchResultsError
 from rubpy import BotClient
 from rubpy.bot import filters
 from utils import ex_update_movie_links, ex_update_movie_links_multiple
@@ -38,8 +38,7 @@ from database import (
 )
 
 import logging
-
-log = logging.getLogger("AUTOMATION")
+log = logging.getLogger("BOT")
 log.setLevel(logging.INFO)
 
 notification_queue = queue.Queue()
@@ -89,7 +88,6 @@ def admin_only(func):
 
 user_states = {}
 
-# تعریف کیپد اصلی منو
 row1 = KeypadRow(buttons=[Button(id="start", button_text="/start", type=ButtonTypeEnum.SIMPLE)])
 row2 = KeypadRow(buttons=[Button(id="update", button_text="اپدیت لینک ها", type=ButtonTypeEnum.SIMPLE)])
 row3 = KeypadRow(buttons=[Button(id="search", button_text="جستوجوی فیلم", type=ButtonTypeEnum.SIMPLE)])
@@ -278,7 +276,7 @@ async def run_search(bot, update: Update, query: str, page: int = 0) -> None:
         page (int, optional): شماره صفحه برای صفحه‌بندی. پیش‌فرض 0.
     """
     guid = update.chat_id
-    results = search_movies_smart(query, limit=20)
+    results = await asyncio.to_thread(search_movies_smart, query, limit=20)
     if not results:
         await update.reply(f"❌ نتیجه‌ای برای «{query}» پیدا نشد.", parse_mode="Markdown")
         await state_filter.clear_state_for(update)
@@ -508,7 +506,7 @@ async def confirm_delete(bot, update: Update) -> None:
     guid = update.chat_id
     movie = user_states.get(guid, {}).get('editing_movie')
     if update.new_message.text.strip().lower() in ['بله', 'حذف کن', 'آره']:
-        ok = delete_movie(movie['id']) if movie else False
+        ok = await asyncio.to_thread(delete_movie, movie['id']) if movie else False
         user_states.pop(guid, None)
         await state_filter.clear_state_for(update)
         await make_start_keypad(bot, update)
@@ -531,7 +529,7 @@ async def transfer_message(bot, update: Update) -> None:
     """
     await bot.send_message(client_chat_guid, f"/edit")
     u = await update.reply("شروع شد...", parse_mode="Markdown")
-    all_movie = get_all_movies()
+    all_movie = await asyncio.to_thread(get_all_movies)
     for i in all_movie:
         await asyncio.sleep(1)
     await bot.send_message(u.chat_id, f'تمام شد', reply_to_message_id=u.message_id)
@@ -551,7 +549,7 @@ async def handle_update(bot, update) -> None:
         update: آبجکت آپدیت.
     """
     new_message = await update.reply("آپدیت شروع شد...", parse_mode="Markdown")
-    all_movies = get_all_movies()
+    all_movies = await asyncio.to_thread(get_all_movies)
     all_movies.reverse()
 
     for movie in all_movies:
@@ -566,19 +564,19 @@ async def handle_update(bot, update) -> None:
         query_search = tags[1] if len(tags) > 1 else (tags[0] if tags else full_movie.get('title', ''))
 
         try:
-            await asyncio.to_thread(ex_update_movie_links, full_movie)
+            await ex_update_movie_links(full_movie)
 
         except MovieNotFoundError as e:
             await bot.send_message(new_message.chat_id, f"🔎 **جستجو با تگ:** `{query_search}`\n\n❌ {str(e)}",
                                    reply_to_message_id=new_message.message_id, parse_mode="Markdown")
-            add_failed_movie(title=full_movie['title'],
+            await asyncio.to_thread(add_failed_movie, title=full_movie['title'],
                              error=f"اسم ارور: {type(e).__name__}\n {str(e)}\nمنبع: {full_movie['source']}",
                              movie_id=full_movie.get('id'),
                              search_query=query_search, source=full_movie.get('source'))
             continue
 
         except MultipleSearchResultsError as e:
-            add_failed_movie(title=full_movie['title'],
+            await asyncio.to_thread(add_failed_movie, title=full_movie['title'],
                              error=f"اسم ارور: {type(e).__name__}\n {str(e)}\nمنبع: {full_movie['source']}",
                              movie_id=full_movie.get('id'),
                              search_query=query_search, source=full_movie.get('source'))
@@ -600,14 +598,14 @@ async def handle_update(bot, update) -> None:
                 if index is None:
                     await bot.send_message(new_message.chat_id, f"از این فیلم رد شد...",
                                            reply_to_message_id=new_message.message_id)
-                    add_failed_movie(title=full_movie['title'], error=f"{type(e).__name__}",
+                    await asyncio.to_thread(add_failed_movie, title=full_movie['title'], error=f"{type(e).__name__}",
                                      movie_id=full_movie.get('id'),
                                      search_query=query_search, source=full_movie.get('source'))
                     await state_filter.clear_state_for(update)
                     continue
                 else:
                     index = int(index)
-                    update_movie_index(movie['id'], index)
+                    await asyncio.to_thread(update_movie_index, movie['id'], index)
                     os.remove("index.txt")
             else:
                 index = full_movie['index']
@@ -616,12 +614,12 @@ async def handle_update(bot, update) -> None:
                                        reply_to_message_id=new_message.message_id, parse_mode="Markdown")
 
             try:
-                await asyncio.to_thread(ex_update_movie_links_multiple, full_movie, index)
+                await ex_update_movie_links_mult(full_movie, index)
             except Exception as e:
                 await bot.send_message(new_message.chat_id,
                                        f"🔎 **جستجو با تگ:** `{query_search}`\n\n❌ با خطای ناشناخته {str(e)} رو به رو شد",
                                        reply_to_message_id=new_message.message_id, parse_mode="Markdown")
-                add_failed_movie(title=full_movie['title'],
+                await asyncio.to_thread(add_failed_movie, title=full_movie['title'],
                                  error=f"اسم ارور: {type(e).__name__}\n {str(e)}\nمنبع: {full_movie['source']}",
                                  movie_id=full_movie.get('id'),
                                  search_query=query_search, source=full_movie.get('source'))
@@ -630,7 +628,7 @@ async def handle_update(bot, update) -> None:
         except Exception as e:
             await bot.send_message(new_message.chat_id, f"🔎 **جستجو با تگ:** `{query_search}`\n\n❌ خطا: {str(e)}",
                                    reply_to_message_id=new_message.message_id, parse_mode="Markdown")
-            add_failed_movie(title=full_movie['title'],
+            await asyncio.to_thread(add_failed_movie, title=full_movie['title'],
                              error=f"اسم ارور: {type(e).__name__}\n {str(e)}\nمنبع: {full_movie['source']}",
                              movie_id=full_movie.get('id'),
                              search_query=query_search, source=full_movie.get('source'))
@@ -663,16 +661,7 @@ async def handle_index(bot, update: Update) -> None:
     await update.reply(f"گزینه {index + 1} ذخیره شد.", parse_mode="Markdown")
 
 
-def make_failed_list_keyboard(count: int) -> Keypad:
-    """
-    ساخت کیبورد برای نمایش لیست فیلم‌های ناموفق.
-
-    Args:
-        count (int): تعداد آیتم‌ها برای نمایش دکمه‌ها.
-
-    Returns:
-        Keypad: آبجکت کیبورد با دکمه‌های انتخاب و عملیات.
-    """
+def make_failed_list_keyboard(count: int):
     rows = []
     btns = [Button(id=f"fail_{i + 1}", button_text=f"{i + 1}", type=ButtonTypeEnum.SIMPLE) for i in
             range(min(count, 10))]
@@ -699,7 +688,7 @@ async def cmd_failed(bot, update: Update) -> None:
     await state_filter.clear_state_for(update)
     await clear_user_search_data(update.chat_id)
 
-    failed_list = get_all_failed_movies()
+    failed_list = await asyncio.to_thread(get_all_failed_movies)
     if not failed_list:
         await update.reply("✅ هیچ فیلم ناموفقی در لیست وجود ندارد!", parse_mode="Markdown")
         await make_start_keypad(bot, update)
@@ -740,7 +729,7 @@ async def select_failed_movie(bot, update: Update) -> None:
         return
 
     if txt == "🗑️ پاک کردن لیست":
-        clear_all_failed_movies()
+        await asyncio.to_thread(clear_all_failed_movies)
         await update.reply("✅ لیست فیلم‌های ناموفق پاک شد.", parse_mode="Markdown")
         await state_filter.clear_state_for(update)
         await clear_user_search_data(guid)
@@ -862,8 +851,8 @@ async def handle_failed_detail(bot, update: Update) -> None:
     if "MultipleSearchResultsError" in err_type:
         if txt.isdigit():
             index = int(txt) - 1
-            update_movie_index(failed_item['movie_id'], index)
-            delete_failed_movie_by_movie_id(failed_item['movie_id'])
+            await asyncio.to_thread(update_movie_index, failed_item['movie_id'], index)
+            await asyncio.to_thread(delete_failed_movie_by_movie_id, failed_item['movie_id'])
 
             await update.reply(
                 f"✅ ایندکس {index + 1} با موفقیت ذخیره شد و از لیست ناموفق‌ها حذف گردید.\nدر آپدیت بعدی با این ایندکس تلاش می‌شود.",
@@ -895,6 +884,7 @@ async def start_notification_listener(bot_client):
         log.info("👂 Listener started for notifications...")
         while True:
             try:
+                # دریافت پیام از صف
                 chat_id, msg = notification_queue.get(timeout=1)
                 log.info(f"📩 Sending notification to {chat_id}: {msg[:50]}...")
                 await bot_client.send_message(chat_id, msg)
@@ -902,7 +892,9 @@ async def start_notification_listener(bot_client):
             except queue.Empty:
                 await asyncio.sleep(1)
             except Exception as e:
-                log.warning(f"❌ Error in notif queue: {e}")
+                log.error(f"❌ Error in notif queue: {e}")
                 await asyncio.sleep(5)
 
     asyncio.create_task(listener())
+
+
